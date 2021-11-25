@@ -221,9 +221,11 @@ pub const FileVerificationType = enum(u8) {
 };
 
 pub const FileStorageType = enum(u8) {
-    /// Uncompressed?
+    /// Uncompressed
     store,
+    /// Deflate stream
     stream_compress,
+    /// Also deflate stream 🤷
     buffer_compress,
 };
 
@@ -238,14 +240,14 @@ pub const FileEntry = struct {
     /// Length after decompression
     uncompressed_length: u32,
 
-    // TODO: Explore and document mystery num13 here that applies to versions 10 and greater (that means AoE4!)
-
+    /// What hashing algorithm is used to check the file's integrity
     verification_type: FileVerificationType,
+    /// How the file is stored (compressed)
     storage_type: FileStorageType,
 
-    /// CRC of the file; present version >= 6
+    /// CRC of the (potentially) compressed file data at data_offset; present version >= 6
     crc: ?u32 = null,
-    /// Hash of the file; present version >= 7, though in version == 7 the hash
+    /// Hash of the uncompressed file; present version >= 7, though in version == 7 the hash
     /// is located at the end whereas in version > 7 it's located after name_offset
     hash_offset: ?u32 = null,
 
@@ -261,7 +263,7 @@ pub const FileEntry = struct {
         entry.uncompressed_length = try reader.readIntLittle(u32);
 
         if (header.version < 10)
-            _ = try reader.readIntLittle(u32); // num13 - see TODO above
+            _ = try reader.readIntLittle(u32); // num13 - seems to be padding?
 
         entry.verification_type = @intToEnum(FileVerificationType, try reader.readByte());
         entry.storage_type = @intToEnum(FileStorageType, try reader.readByte());
@@ -271,6 +273,9 @@ pub const FileEntry = struct {
         if (header.version == 7)
             entry.hash_offset = try reader.readIntLittle(u32);
 
+        if (entry.hash_offset != null and entry.hash_offset.? == 0)
+            entry.hash_offset = null;
+
         return entry;
     }
 };
@@ -278,7 +283,7 @@ pub const FileEntry = struct {
 pub fn main() !void {
     var allocator = std.heap.page_allocator;
 
-    var file = try std.fs.cwd().openFile("UI.sga", .{});
+    var file = try std.fs.cwd().openFile("ArtLow.sga", .{});
     defer file.close();
 
     const reader = file.reader();
