@@ -31,9 +31,9 @@ pub const SGAHeader = struct {
 
     // Offsets and lengths
 
-    /// Base offset, every other offset here except for `dataOffset` is `dataOffset + otherOffset`
+    /// Base offset, every other offset here except for `data_offset` can be accessed at `offset + other_offset`
     offset: u64,
-    /// Offset for file data
+    /// Offset for raw file data
     data_offset: u64,
 
     /// Where ToC data is stored (relative to `offset`)
@@ -51,14 +51,28 @@ pub const SGAHeader = struct {
     /// Number of file entries
     file_data_count: u32,
 
-    /// Where strings (file names, etc.) are stored (relative to `offset`)
+    /// Where strings (file & folder names, etc.) are stored (relative to `offset`)
     string_offset: u32,
 
-    /// Size of a data block; use unknown
+    /// Size of a data block; use unknown - maybe this was used in the olden days where block padding was needed??
     block_size: u32,
 
-    fn readIndex(self: SGAHeader, reader: anytype) !u32 {
-        return if (self.version <= 4) try reader.readIntLittle(u16) else try reader.readIntLittle(u32);
+    pub fn readIndex(self: SGAHeader, reader: anytype) !u32 {
+        return if (self.version <= 4)
+            try reader.readIntLittle(u16)
+        else
+            try reader.readIntLittle(u32);
+    }
+
+    pub fn readDynamicString(self: SGAHeader, reader: anytype, writer: anytype) !void {
+        _ = self;
+
+        while (true) {
+            var byte = try reader.readByte();
+            if (byte == 0)
+                return;
+            try writer.writeByte(byte);
+        }
     }
 
     pub fn decode(reader: anytype) !SGAHeader {
@@ -81,9 +95,6 @@ pub const SGAHeader = struct {
         _ = try reader.readAll(@ptrCast(*[128]u8, &header.nice_name));
 
         if (header.version < 6) _ = try reader.readAll(&(header.header_md5.?));
-
-        // TODO: Document what nullable(1/2) and num(1-10) actually mean
-        // Nobody knows \0/
 
         var nullable_1: ?u64 = if (header.version >= 9) // nullable1
             try reader.readIntLittle(u64)
@@ -140,16 +151,25 @@ pub const SGAHeader = struct {
     }
 };
 
+/// Seems to document sections, named based on the type of the contents (data - scripts, assets, reflect - databases, attrib - unit, map attributes),
+/// I have never seen more than one per archive and it seems Essence.Core pretty much doesn't care about more than one of these per archive
+/// Could also be related to game's protocols when loading files (data: - maybe there's an attrib: protocol);
+/// see AoE4 logs by running the game with the `-dev` option
 pub const TOCEntry = struct {
     alias: [64]u8,
     name: [64]u8,
 
+    /// Where this section's folder data starts
     folder_start_index: u32,
+    /// Where this section's folder data ends
     folder_end_index: u32,
 
+    /// Where this section's file data starts
     file_start_index: u32,
+    /// Where this section's file data starts
     file_end_index: u32,
 
+    /// This section's root (top) folder
     folder_root_index: u32,
 
     pub fn decode(reader: anytype, header: SGAHeader) !TOCEntry {
@@ -158,13 +178,41 @@ pub const TOCEntry = struct {
         _ = try reader.readAll(&entry.alias);
         _ = try reader.readAll(&entry.name);
 
-        _ = header;
+        entry.folder_start_index = try header.readIndex(reader);
+        entry.folder_end_index = try header.readIndex(reader);
+        entry.file_start_index = try header.readIndex(reader);
+        entry.file_end_index = try header.readIndex(reader);
+        entry.folder_root_index = try header.readIndex(reader);
+
+        return entry;
+    }
+};
+
+pub const FolderEntry = struct {
+    name_offset: u32,
+
+    folder_start_index: u32,
+    folder_end_index: u32,
+
+    file_start_index: u32,
+    file_end_index: u32,
+
+    pub fn decode(reader: anytype, header: SGAHeader) !FolderEntry {
+        var entry: FolderEntry = undefined;
+
+        entry.name_offset = try reader.readIntLittle(u32);
+        entry.folder_start_index = try header.readIndex(reader);
+        entry.folder_end_index = try header.readIndex(reader);
+        entry.file_start_index = try header.readIndex(reader);
+        entry.file_end_index = try header.readIndex(reader);
 
         return entry;
     }
 };
 
 pub fn main() !void {
+    var allocator = std.heap.page_allocator;
+
     var file = try std.fs.cwd().openFile("UI.sga", .{});
     defer file.close();
 
@@ -175,6 +223,27 @@ pub fn main() !void {
     std.log.info("Archive name is \"{s}\"", .{std.unicode.fmtUtf16le(header.nice_name[0..])});
 
     try file.seekTo(header.offset + header.toc_data_offset);
-    var entry = try TOCEntry.decode(reader, header);
-    std.log.info("{s}", .{entry.alias});
+
+    var section: usize = 0;
+    while (section < header.toc_data_count) : (section += 1) {
+        var entry = try TOCEntry.decode(reader, header);
+        std.log.info("{s}", .{entry.name});
+    }
+
+    var name_buf = std.ArrayList(u8).init(allocator);
+
+    try file.seekTo(header.offset + header.folder_data_offset);
+
+    var folder: usize = 0;
+    while (folder < header.folder_data_count) : (folder += 1) {
+        var entry = try FolderEntry.decode(reader, header);
+
+        var old_pos = try reader.context.getPos();
+        try reader.context.seekTo(header.offset + header.string_offset + entry.name_offset);
+        try header.readDynamicString(reader, name_buf.writer());
+        try reader.context.seekTo(old_pos);
+
+        std.log.info("{s}: {s}", .{ name_buf.items, entry });
+        name_buf.items.len = 0;
+    }
 }

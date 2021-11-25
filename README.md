@@ -1,6 +1,6 @@
 # zig-sga
 
-Low-level implementation of Relic's funky archive format in Zig with comments and clearly named variables.
+Low-level minimal allocation implementation of Relic's funky archive format in Zig with comments and clearly named variables.
 
 ## Building
 
