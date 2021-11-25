@@ -189,8 +189,10 @@ pub const TOCEntry = struct {
 };
 
 pub const FolderEntry = struct {
+    /// Offset of the folder's name (offset + string_offset + name_offset)
     name_offset: u32,
 
+    // TODO: Document these; likely used to classify folders/files as parent and child based on their locations
     folder_start_index: u32,
     folder_end_index: u32,
 
@@ -210,6 +212,69 @@ pub const FolderEntry = struct {
     }
 };
 
+pub const FileVerificationType = enum(u8) {
+    none,
+    crc,
+    crc_blocks,
+    md5_blocks,
+    sha1_blocks,
+};
+
+pub const FileStorageType = enum(u8) {
+    /// Uncompressed?
+    store,
+    stream_compress,
+    buffer_compress,
+};
+
+pub const FileEntry = struct {
+    /// Offset of the file's name (offset + string_offset + name_offset)
+    name_offset: u32,
+    /// Offset of the file's data (data_offset + data_offset)
+    data_offset: u64,
+
+    /// Length in the archive as compressed
+    compressed_length: u32,
+    /// Length after decompression
+    uncompressed_length: u32,
+
+    // TODO: Explore and document mystery num13 here that applies to versions 10 and greater (that means AoE4!)
+
+    verification_type: FileVerificationType,
+    storage_type: FileStorageType,
+
+    /// CRC of the file; present version >= 6
+    crc: ?u32 = null,
+    /// Hash of the file; present version >= 7, though in version == 7 the hash
+    /// is located at the end whereas in version > 7 it's located after name_offset
+    hash_offset: ?u32 = null,
+
+    pub fn decode(reader: anytype, header: SGAHeader) !FileEntry {
+        var entry: FileEntry = undefined;
+
+        entry.name_offset = try reader.readIntLittle(u32);
+        if (header.version > 7)
+            entry.hash_offset = try reader.readIntLittle(u32);
+        entry.data_offset = if (header.version < 9) try reader.readIntLittle(u32) else try reader.readIntLittle(u64);
+
+        entry.compressed_length = try reader.readIntLittle(u32);
+        entry.uncompressed_length = try reader.readIntLittle(u32);
+
+        if (header.version < 10)
+            _ = try reader.readIntLittle(u32); // num13 - see TODO above
+
+        entry.verification_type = @intToEnum(FileVerificationType, try reader.readByte());
+        entry.storage_type = @intToEnum(FileStorageType, try reader.readByte());
+
+        if (header.version >= 6)
+            entry.crc = try reader.readIntLittle(u32);
+        if (header.version == 7)
+            entry.hash_offset = try reader.readIntLittle(u32);
+
+        return entry;
+    }
+};
+
 pub fn main() !void {
     var allocator = std.heap.page_allocator;
 
@@ -224,8 +289,8 @@ pub fn main() !void {
 
     try file.seekTo(header.offset + header.toc_data_offset);
 
-    var section: usize = 0;
-    while (section < header.toc_data_count) : (section += 1) {
+    var section_index: usize = 0;
+    while (section_index < header.toc_data_count) : (section_index += 1) {
         var entry = try TOCEntry.decode(reader, header);
         std.log.info("{s}", .{entry.name});
     }
@@ -234,9 +299,22 @@ pub fn main() !void {
 
     try file.seekTo(header.offset + header.folder_data_offset);
 
-    var folder: usize = 0;
-    while (folder < header.folder_data_count) : (folder += 1) {
+    var folder_index: usize = 0;
+    while (folder_index < header.folder_data_count) : (folder_index += 1) {
         var entry = try FolderEntry.decode(reader, header);
+
+        var old_pos = try reader.context.getPos();
+        try reader.context.seekTo(header.offset + header.string_offset + entry.name_offset);
+        try header.readDynamicString(reader, name_buf.writer());
+        try reader.context.seekTo(old_pos);
+
+        std.log.info("{s}: {s}", .{ name_buf.items, entry });
+        name_buf.items.len = 0;
+    }
+
+    var file_index: usize = 0;
+    while (file_index < header.file_data_count) : (file_index += 1) {
+        var entry = try FileEntry.decode(reader, header);
 
         var old_pos = try reader.context.getPos();
         try reader.context.seekTo(header.offset + header.string_offset + entry.name_offset);
