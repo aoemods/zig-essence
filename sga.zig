@@ -64,9 +64,7 @@ pub const SGAHeader = struct {
             try reader.readIntLittle(u32);
     }
 
-    pub fn readDynamicString(self: SGAHeader, reader: anytype, writer: anytype) !void {
-        _ = self;
-
+    pub fn readDynamicString(reader: anytype, writer: anytype) !void {
         while (true) {
             var byte = try reader.readByte();
             if (byte == 0)
