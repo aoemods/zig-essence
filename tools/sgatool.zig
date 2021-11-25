@@ -1,6 +1,9 @@
 const std = @import("std");
 const sga = @import("sga");
 
+// TODO: Fix memory management; doesn't matter much because memory is freed on exit anyways
+// but it'd still be cool if this program wasn't as totally garbage as the original
+
 // TODO: Make sga strings []const u8s, "fixed length" really means "maximum length"
 pub fn dezero(str: []const u8) []const u8 {
     return std.mem.span(@ptrCast([*:0]const u8, str));
@@ -20,11 +23,11 @@ pub const Node = union(enum) {
         };
     }
 
-    pub fn getChildren(self: Node) std.ArrayListUnmanaged(Node) {
+    pub fn getChildren(self: Node) ?std.ArrayListUnmanaged(Node) {
         return switch (self) {
             .toc => |f| f.children,
             .folder => |f| f.children,
-            .file => |f| f.children,
+            .file => null,
         };
     }
 
@@ -52,23 +55,29 @@ pub const Node = union(enum) {
         };
         std.debug.print("{s}\n", .{name});
 
-        for (self.getChildren().items) |child|
-            child.printTree(level + 1);
+        if (self.getChildren()) |children|
+            for (children.items) |child|
+                child.printTree(level + 1);
     }
 };
 
 pub const TOC = struct {
     name: []const u8,
     alt_name: []const u8,
-
     children: std.ArrayListUnmanaged(Node),
 
-    pub fn init(name: []const u8, alt_name: []const u8, children: std.ArrayListUnmanaged(Node)) TOC {
+    header: *const sga.SGAHeader,
+    entry: *const sga.TOCEntry,
+
+    pub fn init(name: []const u8, alt_name: []const u8, children: std.ArrayListUnmanaged(Node), header: *const sga.SGAHeader, entry: *const sga.TOCEntry) TOC {
         var toc: TOC = undefined;
 
         toc.name = name;
         toc.alt_name = alt_name;
         toc.children = children;
+
+        toc.header = header;
+        toc.entry = entry;
 
         return toc;
     }
@@ -79,11 +88,17 @@ pub const Folder = struct {
     parent: *Node,
     children: std.ArrayListUnmanaged(Node),
 
-    pub fn init(name: []const u8, children: std.ArrayListUnmanaged(Node)) Folder {
+    header: *const sga.SGAHeader,
+    entry: *const sga.FolderEntry,
+
+    pub fn init(name: []const u8, children: std.ArrayListUnmanaged(Node), header: *const sga.SGAHeader, entry: *const sga.FolderEntry) Folder {
         var folder: Folder = undefined;
 
         folder.name = name;
         folder.children = children;
+
+        folder.header = header;
+        folder.entry = entry;
 
         return folder;
     }
@@ -92,13 +107,17 @@ pub const Folder = struct {
 pub const File = struct {
     name: []const u8,
     parent: *Node,
-    children: std.ArrayListUnmanaged(Node),
 
-    pub fn init(name: []const u8, children: std.ArrayListUnmanaged(Node)) File {
+    header: *const sga.SGAHeader,
+    entry: *const sga.FileEntry,
+
+    pub fn init(name: []const u8, header: *const sga.SGAHeader, entry: *const sga.FileEntry) File {
         var file: File = undefined;
 
         file.name = name;
-        file.children = children;
+
+        file.header = header;
+        file.entry = entry;
 
         return file;
     }
@@ -120,7 +139,7 @@ fn createChildren(
     allocator: *std.mem.Allocator,
     //
     reader: anytype,
-    header: sga.SGAHeader,
+    header: *const sga.SGAHeader,
     //
     folder_entries: std.ArrayList(sga.FolderEntry),
     file_entries: std.ArrayList(sga.FileEntry),
@@ -144,26 +163,24 @@ fn createChildren(
             name = name[index + 1 ..];
         var children = try createChildren(allocator, reader, header, folder_entries, file_entries, folder_entries.items[folder_index].folder_start_index, folder_entries.items[folder_index].folder_end_index, folder_entries.items[folder_index].file_start_index, folder_entries.items[folder_index].file_end_index, name_last, name_buf);
         if (name.len > 0) {
-            var folder = Folder.init(name, children);
+            var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
             var folder_node = Node{ .folder = folder };
             folder_node.propagateParent(children);
             try node_list.append(allocator, folder_node);
         } else try node_list.appendSlice(allocator, children.toOwnedSlice(allocator));
     }
-    //   for (uint index = fileStartIndex; index < fileEndIndex; ++index)
-    //   {
-    //     long fileOffset = dataOffset + fileData[(int) index].dataOffset;
-    //     string name = this.ReadDynamicString(reader, stringOffset + (long) fileData[(int) index].nameOffset);
-    //     if (name == null && this.Version < (ushort) 6)
-    //     {
-    //       long offset = fileOffset - 260L;
-    //       name = this.m_fileStream.Seek(offset, SeekOrigin.Begin) != offset ? string.Format("File_{0}.dat", (object) index) : this.ReadFixedString(reader, 256, 1);
-    //     }
-    //     uint? crc32 = new uint?();
-    //     if (this.Version >= (ushort) 6)
-    //       crc32 = new uint?(fileData[(int) index].crc);
-    //     nodeList.Add((INode) new File(this, name, fileData[(int) index].storeLength, fileData[(int) index].length, fileData[(int) index].verificationType, fileData[(int) index].storageType, fileOffset, crc32));
-    //   }
+
+    var file_index: usize = file_start_index;
+    while (file_index < file_end_index) : (file_index += 1) {
+        // var file_offset = header.data_offset + file_entries.items[file_index].data_offset;
+        var name = try readDynamicString(reader, name_last, name_buf, header.offset + header.string_offset + file_entries.items[file_index].name_offset);
+        // if (name == null && this.Version < (ushort) 6)
+        // {
+        //   long offset = fileOffset - 260L;
+        //   name = this.m_fileStream.Seek(offset, SeekOrigin.Begin) != offset ? string.Format("File_{0}.dat", (object) index) : this.ReadFixedString(reader, 256, 1);
+        // } TODO: handle this nasty case
+        try node_list.append(allocator, Node{ .file = File.init(name, header, &file_entries.items[file_index]) });
+    }
     return node_list;
 }
 
@@ -186,14 +203,13 @@ pub fn main() !void {
     var out_dir_path = args[2];
 
     var archive_file = try std.fs.cwd().openFile(archive_path, .{});
+    defer archive_file.close();
     std.fs.cwd().makeDir(out_dir_path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => @panic("oof"),
     };
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{ .access_sub_paths = true });
-
-    _ = archive_file;
-    _ = out_dir;
+    defer out_dir.close();
 
     const reader = archive_file.reader();
 
@@ -230,12 +246,53 @@ pub fn main() !void {
     // Make the tree
     var name_last: usize = 0;
     var name_buf = std.ArrayList(u8).init(allocator);
+    var data_buf = std.ArrayList(u8).init(allocator);
 
     for (toc_entries.items) |toc| {
-        var children = try createChildren(allocator, reader, header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_last, &name_buf);
-        var toc_node = Node{ .toc = TOC.init(dezero(&toc.name), dezero(&toc.alias), children) };
+        var children = try createChildren(allocator, reader, &header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_last, &name_buf);
+        var toc_node = Node{ .toc = TOC.init(dezero(&toc.name), dezero(&toc.alias), children, &header, &toc) };
         toc_node.propagateParent(children);
 
-        toc_node.printTree(0);
+        try writeTree(reader, &data_buf, toc_node, out_dir);
+    }
+}
+
+pub fn writeTree(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir: std.fs.Dir) anyerror!void {
+    var name = switch (node) {
+        .toc => |f| f.name,
+        .folder => |f| f.name,
+        .file => |f| f.name,
+    };
+
+    if (node.getChildren()) |children| {
+        dir.makeDir(name) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => @panic("oof"),
+        };
+        var sub_dir = try dir.openDir(name, .{ .access_sub_paths = true });
+        defer sub_dir.close();
+
+        for (children.items) |child|
+            try writeTree(reader, data_buf, child, sub_dir);
+    } else {
+        var file = try dir.createFile(name, .{});
+        defer file.close();
+
+        var writer = file.writer();
+
+        switch (node.file.entry.storage_type) {
+            .stream_compress, .buffer_compress => {
+                var window: [0x8000]u8 = undefined;
+                try reader.context.seekTo(node.file.header.data_offset + node.file.entry.data_offset + 2);
+                var stream = std.compress.deflate.inflateStream(reader, &window);
+
+                try data_buf.ensureTotalCapacity(node.file.entry.compressed_length);
+                data_buf.items.len = node.file.entry.compressed_length;
+
+                _ = try stream.reader().readAll(data_buf.items);
+                try writer.writeAll(data_buf.items);
+            },
+            else => @panic("Not impl!"),
+        }
     }
 }
