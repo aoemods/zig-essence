@@ -123,16 +123,15 @@ pub const File = struct {
     }
 };
 
-fn readDynamicString(reader: anytype, name_last: *usize, name_buf: *std.ArrayList(u8), offset: usize) ![]const u8 {
+fn readDynamicString(allocator: *std.mem.Allocator, reader: anytype, name_buf: *std.ArrayList(u8), offset: usize) ![]u8 {
     var old_pos = try reader.context.getPos();
     try reader.context.seekTo(offset);
-    try sga.SGAHeader.readDynamicString(reader, name_buf.writer());
+    name_buf.items.len = 0;
+
+    try sga.SGAHeader.readDynamicString(reader, name_buf.*.writer());
     try reader.context.seekTo(old_pos);
 
-    var name = name_buf.items[name_last.*..];
-    name_last.* = name_buf.items.len;
-
-    return name;
+    return allocator.dupe(u8, name_buf.items);
 }
 
 fn createChildren(
@@ -150,18 +149,17 @@ fn createChildren(
     file_start_index: u32,
     file_end_index: u32,
     //
-    name_last: *usize,
     name_buf: *std.ArrayList(u8),
 ) anyerror!std.ArrayListUnmanaged(Node) {
     var node_list = try std.ArrayListUnmanaged(Node).initCapacity(allocator, folder_end_index - folder_start_index + file_end_index - file_start_index);
     var folder_index: usize = folder_start_index;
     while (folder_index < folder_end_index) : (folder_index += 1) {
-        var name = try readDynamicString(reader, name_last, name_buf, header.offset + header.string_offset + folder_entries.items[folder_index].name_offset);
+        var name = try readDynamicString(allocator, reader, name_buf, header.offset + header.string_offset + folder_entries.items[folder_index].name_offset);
 
         var maybe_index = std.mem.lastIndexOfAny(u8, name, &[_]u8{ '/', '\\' });
         if (maybe_index) |index|
             name = name[index + 1 ..];
-        var children = try createChildren(allocator, reader, header, folder_entries, file_entries, folder_entries.items[folder_index].folder_start_index, folder_entries.items[folder_index].folder_end_index, folder_entries.items[folder_index].file_start_index, folder_entries.items[folder_index].file_end_index, name_last, name_buf);
+        var children = try createChildren(allocator, reader, header, folder_entries, file_entries, folder_entries.items[folder_index].folder_start_index, folder_entries.items[folder_index].folder_end_index, folder_entries.items[folder_index].file_start_index, folder_entries.items[folder_index].file_end_index, name_buf);
         if (name.len > 0) {
             var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
             var folder_node = Node{ .folder = folder };
@@ -173,7 +171,7 @@ fn createChildren(
     var file_index: usize = file_start_index;
     while (file_index < file_end_index) : (file_index += 1) {
         // var file_offset = header.data_offset + file_entries.items[file_index].data_offset;
-        var name = try readDynamicString(reader, name_last, name_buf, header.offset + header.string_offset + file_entries.items[file_index].name_offset);
+        var name = try readDynamicString(allocator, reader, name_buf, header.offset + header.string_offset + file_entries.items[file_index].name_offset);
         // if (name == null && this.Version < (ushort) 6)
         // {
         //   long offset = fileOffset - 260L;
@@ -206,7 +204,7 @@ pub fn main() !void {
     defer archive_file.close();
     std.fs.cwd().makeDir(out_dir_path) catch |err| switch (err) {
         error.PathAlreadyExists => {},
-        else => @panic("oof"),
+        else => @panic("Could not create output directory!"),
     };
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{ .access_sub_paths = true });
     defer out_dir.close();
@@ -244,15 +242,16 @@ pub fn main() !void {
         try file_entries.append(try sga.FileEntry.decode(reader, header));
 
     // Make the tree
-    var name_last: usize = 0;
     var name_buf = std.ArrayList(u8).init(allocator);
     var data_buf = std.ArrayList(u8).init(allocator);
 
     for (toc_entries.items) |toc| {
-        var children = try createChildren(allocator, reader, &header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_last, &name_buf);
+        var children = try createChildren(allocator, reader, &header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_buf);
         var toc_node = Node{ .toc = TOC.init(dezero(&toc.name), dezero(&toc.alias), children, &header, &toc) };
         toc_node.propagateParent(children);
 
+        _ = data_buf;
+        // toc_node.printTree(0);
         try writeTree(reader, &data_buf, toc_node, out_dir);
     }
 }
@@ -292,7 +291,13 @@ pub fn writeTree(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir:
                 _ = try stream.reader().readAll(data_buf.items);
                 try writer.writeAll(data_buf.items);
             },
-            else => @panic("Not impl!"),
+            .store => {
+                try data_buf.ensureTotalCapacity(node.file.entry.uncompressed_length);
+                data_buf.items.len = node.file.entry.uncompressed_length;
+
+                _ = try reader.readAll(data_buf.items);
+                try writer.writeAll(data_buf.items);
+            },
         }
     }
 }
