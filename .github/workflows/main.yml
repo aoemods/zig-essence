@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    paths:
+    - '**.zig'
+  pull_request:
+    paths:
+    - '**.zig'
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true
+      - uses: goto-bus-stop/setup-zig@v1
+        with:
+          version: master
+
+      - name: Build
+        run: zig build
+
+      - name: Build artifacts
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        run: |
+          declare -a targets=("x86_64-windows" "x86_64-linux" "x86_64-macos" "i386-windows" "i386-linux")
+          mkdir -p "artifacts/"
+          for target in "${targets[@]}"; do
+            mkdir -p artifacts/$target
+            echo "Building target ${target}..."	    
+            zig build -Dtarget=${target} -Drelease-safe --prefix artifacts/${target}/
+            cp README.md artifacts/${target}/
+            cp LICENSE artifacts/${target}/
+            cd artifacts/${target}/
+            tar cfJ ${target}.tar.xz *.md bin/*
+            mv ${target}.tar.xz ../
+            cd ../..
+          done
+      - name: Upload artifacts
+        if: ${{ matrix.os == 'ubuntu-latest' }}
+        uses: actions/upload-artifact@v2
+        with:
+          name: builds
+          path: artifacts/*.tar.xz
