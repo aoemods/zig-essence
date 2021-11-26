@@ -43,21 +43,21 @@ pub const Node = union(enum) {
         }
     }
 
-    pub fn printTree(self: Node, level: usize) void {
+    pub fn printTree(self: Node, level: usize) anyerror!void {
         var l: usize = 0;
         while (l < level * 4) : (l += 1)
-            std.debug.print(" ", .{});
+            try std.io.getStdOut().writer().print(" ", .{});
 
         var name = switch (self) {
             .toc => |f| f.name,
             .folder => |f| f.name,
             .file => |f| f.name,
         };
-        std.debug.print("{s}\n", .{name});
+        try std.io.getStdOut().writer().print("{s}\n", .{name});
 
         if (self.getChildren()) |children|
             for (children.items) |child|
-                child.printTree(level + 1);
+                try child.printTree(level + 1);
     }
 };
 
@@ -182,23 +182,11 @@ fn createChildren(
     return node_list;
 }
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+pub fn decompress(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
+    if (args.len != 2) return error.InvalidArgs;
 
-    var args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
-
-    if (args.len != 3) {
-        std.debug.print(
-            \\sgatool <archive_path> <out_dir_path>
-            \\
-            \\
-        , .{});
-        return;
-    }
-
-    var archive_path = args[1];
-    var out_dir_path = args[2];
+    var archive_path = args[0];
+    var out_dir_path = args[1];
 
     var archive_file = try std.fs.cwd().openFile(archive_path, .{});
     defer archive_file.close();
@@ -252,11 +240,67 @@ pub fn main() !void {
 
         _ = data_buf;
         // toc_node.printTree(0);
-        try writeTree(reader, &data_buf, toc_node, out_dir);
+        try writeTreeToFileSystem(reader, &data_buf, toc_node, out_dir);
     }
 }
 
-pub fn writeTree(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir: std.fs.Dir) anyerror!void {
+// TODO: Modularize code
+
+pub fn tree(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
+    if (args.len != 1) return error.InvalidArgs;
+
+    var archive_path = args[0];
+
+    var archive_file = try std.fs.cwd().openFile(archive_path, .{});
+    defer archive_file.close();
+
+    const reader = archive_file.reader();
+
+    var header = try sga.SGAHeader.decode(reader);
+    std.log.info("Archive name is \"{s}\"", .{std.unicode.fmtUtf16le(header.nice_name[0..])});
+
+    // TOC
+    try archive_file.seekTo(header.offset + header.toc_data_offset);
+
+    var toc_entries = try std.ArrayList(sga.TOCEntry).initCapacity(allocator, header.toc_data_count);
+    var toc_index: usize = 0;
+
+    while (toc_index < header.toc_data_count) : (toc_index += 1)
+        try toc_entries.append(try sga.TOCEntry.decode(reader, header));
+
+    // Folders
+    try archive_file.seekTo(header.offset + header.folder_data_offset);
+
+    var folder_entries = try std.ArrayList(sga.FolderEntry).initCapacity(allocator, header.folder_data_count);
+    var folder_index: usize = 0;
+
+    while (folder_index < header.folder_data_count) : (folder_index += 1)
+        try folder_entries.append(try sga.FolderEntry.decode(reader, header));
+
+    // Files
+    try archive_file.seekTo(header.offset + header.file_data_offset);
+
+    var file_entries = try std.ArrayList(sga.FileEntry).initCapacity(allocator, header.file_data_count);
+    var file_index: usize = 0;
+
+    while (file_index < header.file_data_count) : (file_index += 1)
+        try file_entries.append(try sga.FileEntry.decode(reader, header));
+
+    // Make the tree
+    var name_buf = std.ArrayList(u8).init(allocator);
+    var data_buf = std.ArrayList(u8).init(allocator);
+
+    for (toc_entries.items) |toc| {
+        var children = try createChildren(allocator, reader, &header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_buf);
+        var toc_node = Node{ .toc = TOC.init(dezero(&toc.name), dezero(&toc.alias), children, &header, &toc) };
+        toc_node.propagateParent(children);
+
+        _ = data_buf;
+        try toc_node.printTree(0);
+    }
+}
+
+pub fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir: std.fs.Dir) anyerror!void {
     var name = switch (node) {
         .toc => |f| f.name,
         .folder => |f| f.name,
@@ -272,7 +316,7 @@ pub fn writeTree(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir:
         defer sub_dir.close();
 
         for (children.items) |child|
-            try writeTree(reader, data_buf, child, sub_dir);
+            try writeTreeToFileSystem(reader, data_buf, child, sub_dir);
     } else {
         var file = try dir.createFile(name, .{});
         defer file.close();
@@ -299,5 +343,43 @@ pub fn writeTree(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir:
                 try writer.writeAll(data_buf.items);
             },
         }
+    }
+}
+
+fn printHelp() void {
+    std.debug.print(
+        \\
+        \\sgatool [decompress|compress|tree] ...
+        \\    decompress <archive_path> <out_dir_path>
+        \\    compress <dir_path> <out_archive_path>
+        \\    tree <archive_path>
+        \\
+        \\
+    , .{});
+}
+
+pub fn main() !void {
+    const allocator = std.heap.page_allocator;
+
+    var args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len < 3) {
+        printHelp();
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "decompress")) {
+        decompress(allocator, args[2..]) catch |err| switch (err) {
+            error.InvalidArgs => printHelp(),
+            else => std.log.err("{s}", .{err}),
+        };
+    } else if (std.mem.eql(u8, args[1], "tree")) {
+        tree(allocator, args[2..]) catch |err| switch (err) {
+            error.InvalidArgs => printHelp(),
+            else => std.log.err("{s}", .{err}),
+        };
+    } else {
+        printHelp();
     }
 }
