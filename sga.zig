@@ -64,6 +64,13 @@ pub const SGAHeader = struct {
             try reader.readIntLittle(u32);
     }
 
+    pub fn writeIndex(self: SGAHeader, writer: anytype, index: u32) !void {
+        if (self.version <= 4)
+            try writer.writeIntLittle(u16, @intCast(u16, index))
+        else
+            try writer.writeIntLittle(u32, index);
+    }
+
     pub fn readDynamicString(reader: anytype, writer: anytype) !void {
         while (true) {
             var byte = try reader.readByte();
@@ -71,6 +78,11 @@ pub const SGAHeader = struct {
                 return;
             try writer.writeByte(byte);
         }
+    }
+
+    pub fn writeDynamicString(writer: anytype, str: []const u8) !void {
+        try writer.writeAll(str);
+        try writer.writeByte(0);
     }
 
     pub fn decode(reader: anytype) !SGAHeader {
@@ -157,14 +169,12 @@ pub const TOCEntry = struct {
     alias: [64]u8,
     name: [64]u8,
 
-    /// Where this section's folder data starts
+    // Folders within these indexes are children of this TOC section
     folder_start_index: u32,
-    /// Where this section's folder data ends
     folder_end_index: u32,
 
-    /// Where this section's file data starts
+    // Files within these indexes are children of this TOC section
     file_start_index: u32,
-    /// Where this section's file data starts
     file_end_index: u32,
 
     /// This section's root (top) folder
@@ -184,16 +194,28 @@ pub const TOCEntry = struct {
 
         return entry;
     }
+
+    pub fn encode(self: TOCEntry, writer: anytype, header: SGAHeader) !void {
+        try writer.writeAll(self.alias);
+        try writer.writeAll(self.name);
+
+        try header.writeIndex(writer, self.folder_start_index);
+        try header.writeIndex(writer, self.folder_end_index);
+        try header.writeIndex(writer, self.file_start_index);
+        try header.writeIndex(writer, self.file_end_index);
+        try header.writeIndex(writer, self.folder_root_index);
+    }
 };
 
 pub const FolderEntry = struct {
     /// Offset of the folder's name (offset + string_offset + name_offset)
     name_offset: u32,
 
-    // TODO: Document these; likely used to classify folders/files as parent and child based on their locations
+    // Folders within these indexes are children of this folder
     folder_start_index: u32,
     folder_end_index: u32,
 
+    // Files within these indexes are children of this folder
     file_start_index: u32,
     file_end_index: u32,
 
@@ -207,6 +229,14 @@ pub const FolderEntry = struct {
         entry.file_end_index = try header.readIndex(reader);
 
         return entry;
+    }
+
+    pub fn encode(self: FolderEntry, writer: anytype, header: SGAHeader) !void {
+        try writer.writeIntLittle(u32, self.name_offset);
+        try header.writeIndex(writer, self.folder_start_index);
+        try header.writeIndex(writer, self.folder_end_index);
+        try header.writeIndex(writer, self.file_start_index);
+        try header.writeIndex(writer, self.file_end_index);
     }
 };
 
@@ -275,6 +305,30 @@ pub const FileEntry = struct {
             entry.hash_offset = null;
 
         return entry;
+    }
+
+    pub fn encode(self: FileEntry, writer: anytype, header: SGAHeader) !void {
+        try writer.writeIntLittle(u32, self.name_offset);
+        if (header.version > 7)
+            try writer.writeIntLittle(u32, self.hash_offset orelse 0);
+        if (header.version < 9)
+            try writer.writeIntLittle(u32, self.data_offset)
+        else
+            try writer.writeIntLittle(u64, self.data_offset);
+
+        try writer.writeIntLittle(u32, self.compressed_length);
+        try writer.writeIntLittle(u32, self.uncompressed_length);
+
+        if (header.version < 10)
+            _ = try writer.writeIntLittle(u32, 0); // num13 - seems to be padding?
+
+        try writer.writeByte(@enumToInt(self.verification_type));
+        try writer.writeByte(@enumToInt(self.storage_type));
+
+        if (header.version >= 6)
+            try writer.writeIntLittle(u32, self.crc.?);
+        if (header.version == 7)
+            try writer.writeIntLittle(u32, self.hash_offset orelse 0);
     }
 };
 
