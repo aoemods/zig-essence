@@ -257,6 +257,7 @@ pub fn tree(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
     const reader = archive_file.reader();
 
     var header = try sga.SGAHeader.decode(reader);
+    std.log.info("Header: {s}", .{header});
     std.log.info("Archive name is \"{s}\"", .{std.unicode.fmtUtf16le(header.nice_name[0..])});
 
     // TOC
@@ -296,7 +297,7 @@ pub fn tree(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
         toc_node.propagateParent(children);
 
         _ = data_buf;
-        try toc_node.printTree(0);
+        // try toc_node.printTree(0);
     }
 }
 

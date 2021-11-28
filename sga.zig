@@ -53,6 +53,13 @@ pub const SGAHeader = struct {
 
     /// Where strings (file & folder names, etc.) are stored (relative to `offset`)
     string_offset: u32,
+    /// Length of the string section
+    string_length: u32,
+
+    /// Where file hashes are stored (relative to `offset`?)
+    hash_offset: ?u32 = null,
+    /// Length of file hashes
+    hash_length: ?u32 = null,
 
     /// Size of a data block; use unknown - maybe this was used in the olden days where block padding was needed??
     block_size: u32,
@@ -106,16 +113,16 @@ pub const SGAHeader = struct {
 
         if (header.version < 6) _ = try reader.readAll(&(header.header_md5.?));
 
-        var nullable_1: ?u64 = if (header.version >= 9) // nullable1
+        var nullable_1: ?u64 = if (header.version >= 9) // nullable1, header offset
             try reader.readIntLittle(u64)
         else if (header.version >= 8)
             @as(u64, try reader.readIntLittle(u32))
         else
             null;
 
-        var header_blob_offset = try reader.readIntLittle(u32); // num1, used pretty much nowhere
+        var header_blob_offset = try reader.readIntLittle(u32); // num1, used pretty much nowhere, typically points to EoF
         _ = header_blob_offset;
-        var data_blob_offset: ?u64 = null; // nullable2, used pretty much nowhere
+        var data_blob_offset: ?u64 = null; // nullable2, used pretty much nowhere, typically points to header.offset
         header.data_offset = 0; // Used to read file data
 
         if (header.version >= 9) {
@@ -127,7 +134,7 @@ pub const SGAHeader = struct {
                 data_blob_offset = try reader.readIntLittle(u32);
         }
 
-        var num2 = try reader.readIntLittle(u32); // num2, no use
+        var num2 = try reader.readIntLittle(u32); // num2, no use, typically = 1
         _ = num2;
 
         if (header.version >= 8)
@@ -143,21 +150,75 @@ pub const SGAHeader = struct {
         header.file_data_offset = try reader.readIntLittle(u32); // num7
         header.file_data_count = try header.readIndex(reader); // num8
         header.string_offset = try reader.readIntLittle(u32); // num9
-
-        var num10 = try header.readIndex(reader); // num10, no use
-        _ = num10;
+        header.string_length = try header.readIndex(reader); // num10
 
         if (header.version >= 7) {
-            var num11 = try reader.readIntLittle(u32); // num11
-            _ = num11;
+            header.hash_offset = try reader.readIntLittle(u32); // num11
             if (header.version >= 8) {
-                var num12 = try reader.readIntLittle(u32); // num12
-                _ = num12;
+                header.hash_length = try reader.readIntLittle(u32); // num12
             }
             header.block_size = try reader.readIntLittle(u32);
         }
 
         return header;
+    }
+
+    pub fn encode(self: SGAHeader, writer: anytype) !void {
+        try writer.writeAll("_ARCHIVE");
+
+        try writer.writeIntLittle(u16, self.version);
+        try writer.writeIntLittle(u16, @enumToInt(self.product));
+
+        if (self.version < 4 or self.version > 10 or self.product != Product.essence)
+            return error.UnsupportedVersion;
+
+        if (self.version < 6) try writer.writeAll(&(self.file_md5.?));
+
+        _ = try writer.writeAll(@ptrCast(*[128]u8, &self.nice_name));
+
+        if (self.version < 6) _ = try writer.writeAll(&(self.header_md5.?));
+
+        // nullable1, header offset
+        if (self.version >= 9)
+            try writer.writeIntLittle(u64, self.offset)
+        else if (self.version >= 8)
+            try writer.writeIntLittle(u32, self.offset);
+
+        try writer.writeIntLittle(u32, 0); // num1, used pretty much nowhere, typically points to EoF
+        var data_blob_offset: u64 = self.offset; // nullable2, used pretty much nowhere, typically points to header.offset
+
+        if (self.version >= 9) {
+            try writer.writeIntLittle(u64, self.data_offset);
+            try writer.writeIntLittle(u64, data_blob_offset);
+        } else {
+            try writer.writeIntLittle(u32, self.data_offset);
+            if (self.version >= 8)
+                try writer.writeIntLittle(u32, self.data_blob_offset);
+        }
+
+        try writer.writeIntLittle(u32, 1); // num2, no use, typically = 1
+
+        // if (self.version >= 8)
+        //     try writer.context.seekBy(256);
+
+        try writer.context.seekTo(self.offset);
+
+        try writer.writeIntLittle(u32, self.toc_data_offset); // num3
+        try self.writeIndex(writer, self.toc_data_count); // num4
+        try writer.writeIntLittle(u32, self.folder_data_offset); // num5
+        try self.writeIndex(writer, self.folder_data_count); // num6
+        try writer.writeIntLittle(u32, self.file_data_offset); // num7
+        try self.writeIndex(writer, self.file_data_count); // num8
+        try writer.writeIntLittle(u32, self.string_offset); // num9
+        try self.writeIndex(writer, self.string_length); // num10
+
+        if (self.version >= 7) {
+            try writer.writeIntLittle(u32, self.hash_offset); // num11
+            if (self.version >= 8) {
+                try writer.writeIntLittle(u32, self.hash_length); // num12
+            }
+            try writer.writeIntLittle(u32, self.block_size);
+        }
     }
 };
 
