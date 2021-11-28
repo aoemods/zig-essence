@@ -338,6 +338,7 @@ pub const FileEntry = struct {
     crc: ?u32 = null,
     /// Hash of the uncompressed file; present version >= 7, though in version == 7 the hash
     /// is located at the end whereas in version > 7 it's located after name_offset
+    /// (offset + header.hash_offset + file.hash_offset)
     hash_offset: ?u32 = null,
 
     pub fn decode(reader: anytype, header: SGAHeader) !FileEntry {
