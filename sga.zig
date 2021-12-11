@@ -32,6 +32,7 @@ pub const SGAHeader = struct {
     // Offsets and lengths
 
     /// Base offset, every other offset here except for `data_offset` can be accessed at `offset + other_offset`
+    /// Where toc_data_offset .. hash_length are stored
     offset: u64,
     /// Offset for raw file data
     data_offset: u64,
@@ -62,7 +63,8 @@ pub const SGAHeader = struct {
     hash_length: ?u32 = null,
 
     /// Size of a data block; use unknown - maybe this was used in the olden days where block padding was needed??
-    block_size: u32,
+    /// Typically 262144 (~256kb)
+    block_size: ?u32 = 262144,
 
     pub fn readIndex(self: SGAHeader, reader: anytype) !u32 {
         return if (self.version <= 4)
@@ -90,6 +92,29 @@ pub const SGAHeader = struct {
     pub fn writeDynamicString(writer: anytype, str: []const u8) !void {
         try writer.writeAll(str);
         try writer.writeByte(0);
+    }
+
+    /// Calculate header.offset, useful for "lazy" unbroken `encode`s.
+    pub fn calcOffset(self: SGAHeader) usize {
+        return 8 + 2 + 2 + (if (self.version < 6) @as(usize, 32) else @as(usize, 0)) + 128 + (if (self.version >= 9)
+            @as(usize, 8)
+        else if (self.version >= 8)
+            @as(usize, 4)
+        else
+            0) + 4 + (if (self.version >= 9)
+            16
+        else
+            4 +
+                (if (self.version >= 8) @as(usize, 4) else @as(usize, 0))) + 4 + (if (self.version >= 8) @as(usize, 256) else @as(usize, 0));
+    }
+
+    /// Calculate the length of the data at header.offset, useful for "lazy" unbroken `encode`s
+    pub fn calcOffsetLength(self: SGAHeader) usize {
+        return 16 + (if (self.version <= 4)
+            @as(usize, 2)
+        else
+            @as(usize, 4)) * 4 + if (self.version >= 7) 8 +
+            if (self.version >= 8) 4;
     }
 
     pub fn decode(reader: anytype) !SGAHeader {
@@ -174,7 +199,7 @@ pub const SGAHeader = struct {
 
         if (self.version < 6) try writer.writeAll(&(self.file_md5.?));
 
-        _ = try writer.writeAll(@ptrCast(*[128]u8, &self.nice_name));
+        _ = try writer.writeAll(@ptrCast(*const [128]u8, &self.nice_name));
 
         if (self.version < 6) _ = try writer.writeAll(&(self.header_md5.?));
 
@@ -182,7 +207,7 @@ pub const SGAHeader = struct {
         if (self.version >= 9)
             try writer.writeIntLittle(u64, self.offset)
         else if (self.version >= 8)
-            try writer.writeIntLittle(u32, self.offset);
+            try writer.writeIntLittle(u32, @intCast(u32, self.offset));
 
         try writer.writeIntLittle(u32, 0); // num1, used pretty much nowhere, typically points to EoF
         var data_blob_offset: u64 = self.offset; // nullable2, used pretty much nowhere, typically points to header.offset
@@ -191,15 +216,15 @@ pub const SGAHeader = struct {
             try writer.writeIntLittle(u64, self.data_offset);
             try writer.writeIntLittle(u64, data_blob_offset);
         } else {
-            try writer.writeIntLittle(u32, self.data_offset);
+            try writer.writeIntLittle(u32, @intCast(u32, self.data_offset));
             if (self.version >= 8)
-                try writer.writeIntLittle(u32, self.data_blob_offset);
+                try writer.writeIntLittle(u32, @intCast(u32, data_blob_offset));
         }
 
         try writer.writeIntLittle(u32, 1); // num2, no use, typically = 1
 
-        // if (self.version >= 8)
-        //     try writer.context.seekBy(256);
+        if (self.version >= 8)
+            try writer.writeAll(&([_]u8{ 08, 00, 00, 00, 00, 00, 00, 00 } ** 32));
 
         try writer.context.seekTo(self.offset);
 
@@ -213,11 +238,11 @@ pub const SGAHeader = struct {
         try self.writeIndex(writer, self.string_length); // num10
 
         if (self.version >= 7) {
-            try writer.writeIntLittle(u32, self.hash_offset); // num11
+            try writer.writeIntLittle(u32, self.hash_offset.?); // num11
             if (self.version >= 8) {
-                try writer.writeIntLittle(u32, self.hash_length); // num12
+                try writer.writeIntLittle(u32, self.hash_length.?); // num12
             }
-            try writer.writeIntLittle(u32, self.block_size);
+            try writer.writeIntLittle(u32, self.block_size.?);
         }
     }
 };

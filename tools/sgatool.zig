@@ -123,7 +123,7 @@ pub const File = struct {
     }
 };
 
-fn readDynamicString(allocator: *std.mem.Allocator, reader: anytype, name_buf: *std.ArrayList(u8), offset: usize) ![]u8 {
+fn readDynamicString(allocator: std.mem.Allocator, reader: anytype, name_buf: *std.ArrayList(u8), offset: usize) ![]u8 {
     var old_pos = try reader.context.getPos();
     try reader.context.seekTo(offset);
     name_buf.items.len = 0;
@@ -135,7 +135,7 @@ fn readDynamicString(allocator: *std.mem.Allocator, reader: anytype, name_buf: *
 }
 
 fn createChildren(
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     //
     reader: anytype,
     header: *const sga.SGAHeader,
@@ -182,7 +182,7 @@ fn createChildren(
     return node_list;
 }
 
-pub fn decompress(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
+fn decompress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     if (args.len != 2) return error.InvalidArgs;
 
     var archive_path = args[0];
@@ -246,7 +246,7 @@ pub fn decompress(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
 
 // TODO: Modularize code
 
-pub fn tree(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
+fn tree(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     if (args.len != 1) return error.InvalidArgs;
 
     var archive_path = args[0];
@@ -301,7 +301,7 @@ pub fn tree(allocator: *std.mem.Allocator, args: [][:0]const u8) !void {
     }
 }
 
-pub fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir: std.fs.Dir) anyerror!void {
+fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: Node, dir: std.fs.Dir) anyerror!void {
     var name = switch (node) {
         .toc => |f| f.name,
         .folder => |f| f.name,
@@ -347,6 +347,44 @@ pub fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node
     }
 }
 
+fn compress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
+    if (args.len != 2) return error.InvalidArgs;
+
+    var header: sga.SGAHeader = undefined;
+    header.version = 10;
+    header.product = .essence;
+    header.offset = header.calcOffset();
+    _ = allocator;
+
+    var dir = try std.fs.cwd().openDir(args[0], .{ .access_sub_paths = true, .iterate = true });
+    defer dir.close();
+
+    var out_file = try std.fs.cwd().createFile(args[1], .{});
+    defer out_file.close();
+
+    // std.log.info("{d}", .{header.calcOffset()});
+
+    // const writer = out_file.writer();
+    // try header.encode(writer);
+
+    // _ = allocator;
+    // var header: sga.SGAHeader = undefined;
+}
+
+// TODO: Implement encoding header signature
+fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
+    _ = allocator;
+    if (args.len != 1) return error.InvalidArgs;
+
+    var file = try std.fs.cwd().openFile(args[0], .{ .write = true });
+    defer file.close();
+
+    var header = try sga.SGAHeader.decode(file.reader());
+
+    try file.seekTo(header.calcOffset() - 256);
+    try file.writer().writeAll(&([_]u8{ 0, 00, 00, 00, 00, 00, 00, 00 } ** 32));
+}
+
 fn printHelp() void {
     std.debug.print(
         \\
@@ -355,6 +393,10 @@ fn printHelp() void {
         \\    compress <dir_path> <out_archive_path>
         \\    tree <archive_path>
         \\
+        \\    xor <archive_path>
+        \\
+        \\NOTE: compress and decompress use the first directory layer as the TOC entries
+        \\NOTE 2: at the moment, compress does not support compression or md5/sha hashing
         \\
     , .{});
 }
@@ -375,8 +417,18 @@ pub fn main() !void {
             error.InvalidArgs => printHelp(),
             else => std.log.err("{s}", .{err}),
         };
+    } else if (std.mem.eql(u8, args[1], "compress")) {
+        compress(allocator, args[2..]) catch |err| switch (err) {
+            error.InvalidArgs => printHelp(),
+            else => std.log.err("{s}", .{err}),
+        };
     } else if (std.mem.eql(u8, args[1], "tree")) {
         tree(allocator, args[2..]) catch |err| switch (err) {
+            error.InvalidArgs => printHelp(),
+            else => std.log.err("{s}", .{err}),
+        };
+    } else if (std.mem.eql(u8, args[1], "xor")) {
+        xor(allocator, args[2..]) catch |err| switch (err) {
             error.InvalidArgs => printHelp(),
             else => std.log.err("{s}", .{err}),
         };

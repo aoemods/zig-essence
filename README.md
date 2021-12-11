@@ -2,9 +2,26 @@
 
 Low-level minimal allocation implementation of Relic's funky archive format in Zig with comments and clearly named variables.
 
-## Building
+## Getting sgatool
 
-Just copy `UI.sga` into the repo directory and `zig run sga.zig` to see some output. This is stupid and dangerous and I pinky promise I'll use `test`s soon!
+You can grab a copy of `sgatool`, the actually executable portion of `zig-sga`, from the latest successful CI run, the latest release (soon), or by compiling the program yourself.
+
+### Compiling
+
+First, install [Zig](https://ziglang.org/). Then:
+```bash
+git clone https://github.com/aoemods/zig-sga
+cd zig-sga
+zig build
+# Output in ./zig-out/bin!
+
+# Or to run it right away (useful for developers)
+zig build sgatool -- [args]
+```
+
+## Using as a Library
+
+See `tools/sgatool.zig` and `build.zig` for an example of how `zig-sga` can be used as a library in Zig!
 
 ## Prior Art
 
