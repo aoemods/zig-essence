@@ -25,6 +25,9 @@ jobs:
         with:
           version: master
 
+      - name: Test library
+        run: zig test sga.zig
+
       - name: Build
         run: zig build
 

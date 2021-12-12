@@ -227,7 +227,7 @@ pub const SGAHeader = struct {
         try writer.writeIntLittle(u32, 1); // num2, no use, typically = 1
 
         if (self.version >= 8)
-            try writer.writeAll(self.signature);
+            try writer.writeAll(&self.signature);
 
         try writer.context.seekTo(self.offset);
 

@@ -380,7 +380,7 @@ fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
 
     var header = try sga.SGAHeader.decode(file.reader());
     header.signature = [_]u8{ 00, 00, 00, 00, 00, 00, 00, 00 } ** 32;
-    header.encode(file.writer());
+    try header.encode(file.writer());
 }
 
 fn printHelp() void {
