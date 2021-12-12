@@ -37,6 +37,9 @@ pub const SGAHeader = struct {
     /// Offset for raw file data
     data_offset: u64,
 
+    /// Archive signature
+    signature: [256]u8 = [_]u8{ 00, 00, 00, 00, 00, 00, 00, 00 } ** 32,
+
     /// Where ToC data is stored (relative to `offset`)
     toc_data_offset: u32,
     /// Number of ToC entries
@@ -163,7 +166,7 @@ pub const SGAHeader = struct {
         _ = num2;
 
         if (header.version >= 8)
-            try reader.context.seekBy(256);
+            _ = try reader.readAll(&header.signature);
 
         header.offset = if (nullable_1) |val| val else try reader.context.getPos();
         try reader.context.seekTo(header.offset);
@@ -224,7 +227,7 @@ pub const SGAHeader = struct {
         try writer.writeIntLittle(u32, 1); // num2, no use, typically = 1
 
         if (self.version >= 8)
-            try writer.writeAll(&([_]u8{ 08, 00, 00, 00, 00, 00, 00, 00 } ** 32));
+            try writer.writeAll(self.signature);
 
         try writer.context.seekTo(self.offset);
 
@@ -419,4 +422,26 @@ pub const FileEntry = struct {
     }
 };
 
-pub fn main() !void {}
+test "Decode" {
+    const tora1 = @embedFile("samples/tora1.sga");
+    var reader = std.io.fixedBufferStream(tora1).reader();
+
+    var header = try SGAHeader.decode(reader);
+
+    try std.testing.expectEqual(@as(u16, 10), header.version);
+
+    var name_buf: [128]u8 = undefined;
+    _ = try std.unicode.utf16leToUtf8(&name_buf, &header.nice_name);
+    try std.testing.expectEqualSlices(u8, "data", name_buf[0..4]);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 8, 0, 0, 0, 0, 0, 0, 0 } ** 32, &header.signature);
+
+    try std.testing.expectEqual(@as(u32, 1), header.toc_data_count);
+    try reader.context.seekTo(header.offset + header.toc_data_offset);
+
+    var toc = try TOCEntry.decode(reader, header);
+    try std.testing.expectEqualSlices(u8, "data", toc.name[0..4]);
+
+    try std.testing.expectEqual(@as(u32, 2), header.folder_data_count); // data, scar
+    try std.testing.expectEqual(@as(u32, 1), header.file_data_count); // somescript.scar
+}

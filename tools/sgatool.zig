@@ -371,7 +371,6 @@ fn compress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     // var header: sga.SGAHeader = undefined;
 }
 
-// TODO: Implement encoding header signature
 fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     _ = allocator;
     if (args.len != 1) return error.InvalidArgs;
@@ -380,9 +379,8 @@ fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     defer file.close();
 
     var header = try sga.SGAHeader.decode(file.reader());
-
-    try file.seekTo(header.calcOffset() - 256);
-    try file.writer().writeAll(&([_]u8{ 0, 00, 00, 00, 00, 00, 00, 00 } ** 32));
+    header.signature = [_]u8{ 00, 00, 00, 00, 00, 00, 00, 00 } ** 32;
+    header.encode(file.writer());
 }
 
 fn printHelp() void {
@@ -396,7 +394,8 @@ fn printHelp() void {
         \\    xor <archive_path>
         \\
         \\NOTE: compress and decompress use the first directory layer as the TOC entries
-        \\NOTE 2: at the moment, compress does not support compression or md5/sha hashing
+        \\NOTE 2: at the moment, compress does not support *actual* file compression or md5/sha hashing, it'll just
+        \\lump your files into the SGA unhashed and uncompressed :P
         \\
     , .{});
 }
