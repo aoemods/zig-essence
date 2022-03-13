@@ -25,7 +25,7 @@ fn decompress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
 
     var archive = try sga.Archive.fromFile(arena_allocator, archive_file);
     for (archive.root_nodes.items) |node|
-        try writeTreeToFileSystem(archive_file.reader(), &data_buf, node, out_dir);
+        try writeTreeToFileSystem(arena_allocator, archive_file.reader(), &data_buf, node, out_dir);
 }
 
 // TODO: Modularize code
@@ -48,7 +48,7 @@ fn tree(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
 }
 
 // TODO: Move some of this functionality to a decompress in `sga.zig`
-fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: sga.Node, dir: std.fs.Dir) anyerror!void {
+fn writeTreeToFileSystem(allocator: std.mem.Allocator, reader: anytype, data_buf: *std.ArrayList(u8), node: sga.Node, dir: std.fs.Dir) anyerror!void {
     var name = switch (node) {
         .toc => |f| f.name,
         .folder => |f| f.name,
@@ -64,7 +64,7 @@ fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: sg
         defer sub_dir.close();
 
         for (children.items) |child|
-            try writeTreeToFileSystem(reader, data_buf, child, sub_dir);
+            try writeTreeToFileSystem(allocator, reader, data_buf, child, sub_dir);
     } else {
         var file = try dir.createFile(name, .{});
         defer file.close();
@@ -73,9 +73,8 @@ fn writeTreeToFileSystem(reader: anytype, data_buf: *std.ArrayList(u8), node: sg
 
         switch (node.file.entry.storage_type) {
             .stream_compress, .buffer_compress => {
-                var window: [0x8000]u8 = undefined;
                 try reader.context.seekTo(node.file.header.data_offset + node.file.entry.data_offset + 2);
-                var stream = std.compress.deflate.inflateStream(reader, &window);
+                var stream = try std.compress.deflate.decompressor(allocator, reader, null);
 
                 try data_buf.ensureTotalCapacity(node.file.entry.compressed_length);
                 data_buf.items.len = node.file.entry.compressed_length;
@@ -129,7 +128,7 @@ fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     _ = allocator;
     if (args.len != 1) return error.InvalidArgs;
 
-    var file = try std.fs.cwd().openFile(args[0], .{ .write = true });
+    var file = try std.fs.cwd().openFile(args[0], .{ .mode = .write_only });
     defer file.close();
 
     var header = try sga.SGAHeader.decode(file.reader());
