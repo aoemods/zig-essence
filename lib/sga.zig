@@ -405,31 +405,6 @@ pub const FileEntry = struct {
     }
 };
 
-const tora1 = @embedFile("samples/tora1.sga");
-
-test "Low-level Decode" {
-    var reader = std.io.fixedBufferStream(tora1).reader();
-
-    var header = try SGAHeader.decode(reader);
-
-    try std.testing.expectEqual(@as(u16, 10), header.version);
-
-    var name_buf: [128]u8 = undefined;
-    _ = try std.unicode.utf16leToUtf8(&name_buf, &header.nice_name);
-    try std.testing.expectEqualSlices(u8, "data", name_buf[0..4]);
-
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 8, 0, 0, 0, 0, 0, 0, 0 } ** 32, &header.signature);
-
-    try std.testing.expectEqual(@as(u32, 1), header.toc_data_count);
-    try reader.context.seekTo(header.offset + header.toc_data_offset);
-
-    var toc = try TOCEntry.decode(reader, header);
-    try std.testing.expectEqualSlices(u8, "data", toc.name[0..4]);
-
-    try std.testing.expectEqual(@as(u32, 2), header.folder_data_count); // data, scar
-    try std.testing.expectEqual(@as(u32, 1), header.file_data_count); // somescript.scar
-}
-
 // Higher level constructs
 
 pub const Node = union(enum) {
@@ -544,24 +519,24 @@ pub const File = struct {
 };
 
 pub const Archive = struct {
-    allocator: std.mem.Allocator,
-    file: std.fs.File,
+    arena: std.heap.ArenaAllocator,
     header: SGAHeader,
     root_nodes: std.ArrayListUnmanaged(Node),
 
     pub fn fromFile(allocator: std.mem.Allocator, file: std.fs.File) !Archive {
+        return fromReader(allocator, file.reader());
+    }
+
+    pub fn fromReader(raw_allocator: std.mem.Allocator, reader: anytype) !Archive {
         var archive: Archive = undefined;
-
-        archive.allocator = allocator;
-        archive.file = file;
-
-        const reader = file.reader();
+        archive.arena = std.heap.ArenaAllocator.init(raw_allocator);
+        const allocator = archive.arena.allocator();
 
         var header = try SGAHeader.decode(reader);
         archive.header = header;
 
         // TOC
-        try archive.file.seekTo(header.offset + header.toc_data_offset);
+        try reader.context.seekTo(header.offset + header.toc_data_offset);
 
         var toc_entries = try std.ArrayList(TOCEntry).initCapacity(allocator, header.toc_data_count);
         var toc_index: usize = 0;
@@ -570,7 +545,7 @@ pub const Archive = struct {
             try toc_entries.append(try TOCEntry.decode(reader, header));
 
         // Folders
-        try archive.file.seekTo(header.offset + header.folder_data_offset);
+        try reader.context.seekTo(header.offset + header.folder_data_offset);
 
         var folder_entries = try std.ArrayList(FolderEntry).initCapacity(allocator, header.folder_data_count);
         var folder_index: usize = 0;
@@ -579,7 +554,7 @@ pub const Archive = struct {
             try folder_entries.append(try FolderEntry.decode(reader, header));
 
         // Files
-        try archive.file.seekTo(header.offset + header.file_data_offset);
+        try reader.context.seekTo(header.offset + header.file_data_offset);
 
         var file_entries = try std.ArrayList(FileEntry).initCapacity(allocator, header.file_data_count);
         var file_index: usize = 0;
@@ -600,6 +575,11 @@ pub const Archive = struct {
         }
 
         return archive;
+    }
+
+    pub fn deinit(self: *Archive) void {
+        self.arena.deinit();
+        self.* = undefined;
     }
 };
 
@@ -688,4 +668,38 @@ pub fn createChildren(
         try node_list.append(allocator, Node{ .file = File.init(name, header, &file_entries.items[file_index]) });
     }
     return node_list;
+}
+
+const tora1 = @embedFile("../samples/tora1.sga");
+
+test "Low-level decode" {
+    var reader = std.io.fixedBufferStream(tora1).reader();
+
+    var header = try SGAHeader.decode(reader);
+
+    try std.testing.expectEqual(@as(u16, 10), header.version);
+
+    var name_buf: [128]u8 = undefined;
+    _ = try std.unicode.utf16leToUtf8(&name_buf, &header.nice_name);
+    try std.testing.expectEqualSlices(u8, "data", name_buf[0..4]);
+
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 8, 0, 0, 0, 0, 0, 0, 0 } ** 32, &header.signature);
+
+    try std.testing.expectEqual(@as(u32, 1), header.toc_data_count);
+    try reader.context.seekTo(header.offset + header.toc_data_offset);
+
+    var toc = try TOCEntry.decode(reader, header);
+    try std.testing.expectEqualSlices(u8, "data", toc.name[0..4]);
+
+    try std.testing.expectEqual(@as(u32, 2), header.folder_data_count); // data, scar
+    try std.testing.expectEqual(@as(u32, 1), header.file_data_count); // somescript.scar
+}
+
+test "High-level decode" {
+    var reader = std.io.fixedBufferStream(tora1).reader();
+
+    var archive = try Archive.fromReader(std.testing.allocator, reader);
+    defer archive.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), archive.root_nodes.items[0].toc.children.items.len);
 }

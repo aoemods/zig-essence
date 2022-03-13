@@ -11,10 +11,20 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
+    // tests
+
+    const main_tests = b.addTest("essence.zig");
+    main_tests.setBuildMode(mode);
+
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&main_tests.step);
+
+    // sgatool
+
     const sgatool_exe = b.addExecutable("sgatool", "tools/sgatool.zig");
     sgatool_exe.addPackage(.{
-        .name = "sga",
-        .path = .{ .path = "sga.zig" },
+        .name = "essence",
+        .path = .{ .path = "essence.zig" },
     });
     sgatool_exe.setTarget(target);
     sgatool_exe.setBuildMode(mode);

@@ -1,10 +1,12 @@
-# zig-sga
+# zig-essence
 
-Low-level minimal allocation implementation of Relic's funky archive format in Zig with comments and clearly named variables. Headers should work for all versions of SGAs, but more high-level code and complex operations are only tested on AoE4 SGAs. 
+Low-level minimal allocation implementation of Relic's funky formats in Zig with comments and clearly named variables.
+
+SGAs: Headers should work for all versions of SGAs, but more high-level code and complex operations are only tested on AoE4 SGAs. 
 
 ## Getting sgatool
 
-You can grab a copy of `sgatool`, the actually executable portion of `zig-sga`, from the latest successful CI run, the latest release (soon), or by compiling the program yourself.
+You can grab a copy of `sgatool`, the actually executable portion of `zig-essence`, from the latest successful CI run, the latest release (soon), or by compiling the program yourself.
 
 ### Compiling
 
@@ -21,7 +23,7 @@ zig build sgatool -- [args]
 
 ## Using as a Library
 
-See `tools/sgatool.zig` and `build.zig` for an example of how `zig-sga` can be used as a library in Zig!
+See `tools/sgatool.zig` and `build.zig` for an example of how `zig-essence` can be used as a library in Zig!
 
 ## Prior Art
 

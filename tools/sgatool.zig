@@ -1,5 +1,6 @@
 const std = @import("std");
-const sga = @import("sga");
+const essence = @import("essence");
+const sga = essence.sga;
 
 fn decompress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     if (args.len != 2) return error.InvalidArgs;
@@ -16,16 +17,13 @@ fn decompress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     var out_dir = try std.fs.cwd().openDir(out_dir_path, .{ .access_sub_paths = true });
     defer out_dir.close();
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    const arena_allocator = arena.allocator();
-    defer arena.deinit();
+    var data_buf = std.ArrayList(u8).init(allocator);
+    defer data_buf.deinit();
 
-    var data_buf = std.ArrayList(u8).init(arena_allocator);
-    _ = data_buf;
-
-    var archive = try sga.Archive.fromFile(arena_allocator, archive_file);
+    var archive = try sga.Archive.fromFile(allocator, archive_file);
+    defer archive.deinit();
     for (archive.root_nodes.items) |node|
-        try writeTreeToFileSystem(arena_allocator, archive_file.reader(), &data_buf, node, out_dir);
+        try writeTreeToFileSystem(allocator, archive_file.reader(), &data_buf, node, out_dir);
 }
 
 // TODO: Modularize code
@@ -38,11 +36,8 @@ fn tree(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     var archive_file = try std.fs.cwd().openFile(archive_path, .{});
     defer archive_file.close();
 
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    const arena_allocator = arena.allocator();
-    defer arena.deinit();
-
-    var archive = try sga.Archive.fromFile(arena_allocator, archive_file);
+    var archive = try sga.Archive.fromFile(allocator, archive_file);
+    defer archive.deinit();
     for (archive.root_nodes.items) |node|
         try node.printTree(0);
 }
@@ -75,6 +70,7 @@ fn writeTreeToFileSystem(allocator: std.mem.Allocator, reader: anytype, data_buf
             .stream_compress, .buffer_compress => {
                 try reader.context.seekTo(node.file.header.data_offset + node.file.entry.data_offset + 2);
                 var stream = try std.compress.deflate.decompressor(allocator, reader, null);
+                defer stream.deinit();
 
                 try data_buf.ensureTotalCapacity(node.file.entry.compressed_length);
                 data_buf.items.len = node.file.entry.compressed_length;
