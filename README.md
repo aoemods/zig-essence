@@ -1,6 +1,6 @@
 # zig-sga
 
-Low-level minimal allocation implementation of Relic's funky archive format in Zig with comments and clearly named variables.
+Low-level minimal allocation implementation of Relic's funky archive format in Zig with comments and clearly named variables. Headers should work for all versions of SGAs, but more high-level code and complex operations are only tested on AoE4 SGAs. 
 
 ## Getting sgatool
 

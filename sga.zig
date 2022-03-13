@@ -83,20 +83,6 @@ pub const SGAHeader = struct {
             try writer.writeIntLittle(u32, index);
     }
 
-    pub fn readDynamicString(reader: anytype, writer: anytype) !void {
-        while (true) {
-            var byte = try reader.readByte();
-            if (byte == 0)
-                return;
-            try writer.writeByte(byte);
-        }
-    }
-
-    pub fn writeDynamicString(writer: anytype, str: []const u8) !void {
-        try writer.writeAll(str);
-        try writer.writeByte(0);
-    }
-
     /// Calculate header.offset, useful for "lazy" unbroken `encode`s.
     pub fn calcOffset(self: SGAHeader) usize {
         return 8 + 2 + 2 + (if (self.version < 6) @as(usize, 32) else @as(usize, 0)) + 128 + (if (self.version >= 9)
@@ -391,9 +377,6 @@ pub const FileEntry = struct {
         if (header.version == 7)
             entry.hash_offset = try reader.readIntLittle(u32);
 
-        if (entry.hash_offset != null and entry.hash_offset.? == 0)
-            entry.hash_offset = null;
-
         return entry;
     }
 
@@ -422,8 +405,9 @@ pub const FileEntry = struct {
     }
 };
 
-test "Decode" {
-    const tora1 = @embedFile("samples/tora1.sga");
+const tora1 = @embedFile("samples/tora1.sga");
+
+test "Low-level Decode" {
     var reader = std.io.fixedBufferStream(tora1).reader();
 
     var header = try SGAHeader.decode(reader);
@@ -444,4 +428,264 @@ test "Decode" {
 
     try std.testing.expectEqual(@as(u32, 2), header.folder_data_count); // data, scar
     try std.testing.expectEqual(@as(u32, 1), header.file_data_count); // somescript.scar
+}
+
+// Higher level constructs
+
+pub const Node = union(enum) {
+    toc: TOC,
+    folder: Folder,
+    file: File,
+
+    pub fn getName(self: Node) []const u8 {
+        return switch (self) {
+            .toc => |f| f.name,
+            .folder => |f| f.name,
+            .file => |f| f.name,
+        };
+    }
+
+    pub fn getChildren(self: Node) ?std.ArrayListUnmanaged(Node) {
+        return switch (self) {
+            .toc => |f| f.children,
+            .folder => |f| f.children,
+            .file => null,
+        };
+    }
+
+    pub fn propagateParent(self: *Node, children: []Node) void {
+        for (children) |*child| {
+            if (child.* != .folder) {
+                if (child.* == .file) {
+                    std.log.info("PARENT: {s}, CHILD: {s}", .{ self.getName(), child.getName() });
+                    child.file.parent = self;
+                }
+            } else {
+                std.log.info("PARENT: {s}, CHILD: {s}", .{ self.getName(), child.getName() });
+                child.folder.parent = self;
+            }
+
+            std.log.info("PARENT {s}", .{child.getParent()});
+        }
+    }
+
+    pub fn printTree(self: Node, level: usize) anyerror!void {
+        var l: usize = 0;
+        while (l < level * 4) : (l += 1)
+            try std.io.getStdOut().writer().print(" ", .{});
+
+        var name = self.getName();
+        try std.io.getStdOut().writer().print("{s}\n", .{name});
+
+        if (self.getChildren()) |children|
+            for (children.items) |child|
+                try child.printTree(level + 1);
+    }
+};
+
+pub const TOC = struct {
+    name: []const u8,
+    alt_name: []const u8,
+    children: std.ArrayListUnmanaged(Node),
+
+    header: *const SGAHeader,
+    entry: *const TOCEntry,
+
+    pub fn init(name: []const u8, alt_name: []const u8, children: std.ArrayListUnmanaged(Node), header: *const SGAHeader, entry: *const TOCEntry) TOC {
+        var toc: TOC = undefined;
+
+        toc.name = name;
+        toc.alt_name = alt_name;
+        toc.children = children;
+
+        toc.header = header;
+        toc.entry = entry;
+
+        return toc;
+    }
+};
+
+pub const Folder = struct {
+    name: []const u8,
+    children: std.ArrayListUnmanaged(Node),
+
+    header: *const SGAHeader,
+    entry: *const FolderEntry,
+
+    pub fn init(name: []const u8, children: std.ArrayListUnmanaged(Node), header: *const SGAHeader, entry: *const FolderEntry) Folder {
+        var folder: Folder = undefined;
+
+        folder.name = name;
+        folder.children = children;
+
+        folder.header = header;
+        folder.entry = entry;
+
+        return folder;
+    }
+};
+
+pub const File = struct {
+    name: []const u8,
+
+    header: *const SGAHeader,
+    entry: *const FileEntry,
+
+    pub fn init(name: []const u8, header: *const SGAHeader, entry: *const FileEntry) File {
+        var file: File = undefined;
+
+        file.name = name;
+
+        file.header = header;
+        file.entry = entry;
+
+        return file;
+    }
+};
+
+pub const Archive = struct {
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    header: SGAHeader,
+    root_nodes: std.ArrayListUnmanaged(Node),
+
+    pub fn fromFile(allocator: std.mem.Allocator, file: std.fs.File) !Archive {
+        var archive: Archive = undefined;
+
+        archive.allocator = allocator;
+        archive.file = file;
+
+        const reader = file.reader();
+
+        var header = try SGAHeader.decode(reader);
+        archive.header = header;
+
+        // TOC
+        try archive.file.seekTo(header.offset + header.toc_data_offset);
+
+        var toc_entries = try std.ArrayList(TOCEntry).initCapacity(allocator, header.toc_data_count);
+        var toc_index: usize = 0;
+
+        while (toc_index < header.toc_data_count) : (toc_index += 1)
+            try toc_entries.append(try TOCEntry.decode(reader, header));
+
+        // Folders
+        try archive.file.seekTo(header.offset + header.folder_data_offset);
+
+        var folder_entries = try std.ArrayList(FolderEntry).initCapacity(allocator, header.folder_data_count);
+        var folder_index: usize = 0;
+
+        while (folder_index < header.folder_data_count) : (folder_index += 1)
+            try folder_entries.append(try FolderEntry.decode(reader, header));
+
+        // Files
+        try archive.file.seekTo(header.offset + header.file_data_offset);
+
+        var file_entries = try std.ArrayList(FileEntry).initCapacity(allocator, header.file_data_count);
+        var file_index: usize = 0;
+
+        while (file_index < header.file_data_count) : (file_index += 1)
+            try file_entries.append(try FileEntry.decode(reader, header));
+
+        // Make the tree
+        var name_buf = std.ArrayListUnmanaged(u8){};
+        // var data_buf = std.ArrayList(u8).init(allocator);
+
+        archive.root_nodes = try std.ArrayListUnmanaged(Node).initCapacity(allocator, toc_entries.items.len);
+
+        for (toc_entries.items) |toc| {
+            var children = try createChildren(allocator, reader, &header, folder_entries, file_entries, toc.folder_root_index, toc.folder_root_index + 1, 0, 0, &name_buf);
+            var toc_node = try archive.root_nodes.addOne(allocator);
+            toc_node.* = Node{ .toc = TOC.init(try allocator.dupe(u8, dezero(&toc.name)), try allocator.dupe(u8, dezero(&toc.alias)), children, &header, &toc) };
+        }
+
+        return archive;
+    }
+};
+
+// TODO: Fix memory management; doesn't matter much because memory is freed on exit anyways
+// but it'd still be cool if this program wasn't as totally garbage as the original
+
+// TODO: Make sga strings []const u8s, "fixed length" really means "maximum length"
+pub fn dezero(str: []const u8) []const u8 {
+    return std.mem.span(@ptrCast([*:0]const u8, str));
+}
+
+pub fn readDynamicString(reader: anytype, writer: anytype) !void {
+    while (true) {
+        var byte = try reader.readByte();
+        if (byte == 0)
+            return;
+        try writer.writeByte(byte);
+    }
+}
+
+pub fn writeDynamicString(writer: anytype, str: []const u8) !void {
+    try writer.writeAll(str);
+    try writer.writeByte(0);
+}
+
+fn readDynamicStringFromOffset(allocator: std.mem.Allocator, reader: anytype, name_buf: *std.ArrayListUnmanaged(u8), offset: usize) ![]u8 {
+    var old_pos = try reader.context.getPos();
+    try reader.context.seekTo(offset);
+    name_buf.items.len = 0;
+
+    try readDynamicString(reader, name_buf.*.writer(allocator));
+    try reader.context.seekTo(old_pos);
+
+    return allocator.dupe(u8, name_buf.items);
+}
+
+pub fn createChildren(
+    allocator: std.mem.Allocator,
+    //
+    reader: anytype,
+    header: *const SGAHeader,
+    //
+    folder_entries: std.ArrayList(FolderEntry),
+    file_entries: std.ArrayList(FileEntry),
+    //
+    folder_start_index: u32,
+    folder_end_index: u32,
+    //
+    file_start_index: u32,
+    file_end_index: u32,
+    //
+    name_buf: *std.ArrayListUnmanaged(u8),
+) anyerror!std.ArrayListUnmanaged(Node) {
+    var node_list = try std.ArrayListUnmanaged(Node).initCapacity(allocator, folder_end_index - folder_start_index + file_end_index - file_start_index);
+    var folder_index: usize = folder_start_index;
+    while (folder_index < folder_end_index) : (folder_index += 1) {
+        var name = try readDynamicStringFromOffset(allocator, reader, name_buf, header.offset + header.string_offset + folder_entries.items[folder_index].name_offset);
+
+        var maybe_index = std.mem.lastIndexOfAny(u8, name, &[_]u8{ '/', '\\' });
+        if (maybe_index) |index|
+            name = name[index + 1 ..];
+        var children = try createChildren(allocator, reader, header, folder_entries, file_entries, folder_entries.items[folder_index].folder_start_index, folder_entries.items[folder_index].folder_end_index, folder_entries.items[folder_index].file_start_index, folder_entries.items[folder_index].file_end_index, name_buf);
+        if (name.len > 0) {
+            // var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
+            // var folder_node = Node{ .folder = folder };
+            // folder_node.propagateParent(children.items);
+            // try node_list.append(allocator, folder_node);
+
+            var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
+            var folder_node = try node_list.addOne(allocator);
+            folder_node.* = Node{ .folder = folder };
+        } else {
+            try node_list.appendSlice(allocator, children.toOwnedSlice(allocator));
+        }
+    }
+
+    var file_index: usize = file_start_index;
+    while (file_index < file_end_index) : (file_index += 1) {
+        // var file_offset = header.data_offset + file_entries.items[file_index].data_offset;
+        var name = try readDynamicStringFromOffset(allocator, reader, name_buf, header.offset + header.string_offset + file_entries.items[file_index].name_offset);
+        // if (name == null && this.Version < (ushort) 6)
+        // {
+        //   long offset = fileOffset - 260L;
+        //   name = this.m_fileStream.Seek(offset, SeekOrigin.Begin) != offset ? string.Format("File_{0}.dat", (object) index) : this.ReadFixedString(reader, 256, 1);
+        // } TODO: handle this nasty case
+        try node_list.append(allocator, Node{ .file = File.init(name, header, &file_entries.items[file_index]) });
+    }
+    return node_list;
 }
