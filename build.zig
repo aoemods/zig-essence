@@ -24,7 +24,7 @@ pub fn build(b: *std.build.Builder) void {
     const sgatool_exe = b.addExecutable("sgatool", "tools/sgatool.zig");
     sgatool_exe.addPackage(.{
         .name = "essence",
-        .path = .{ .path = "essence.zig" },
+        .source = .{ .path = "essence.zig" },
     });
     sgatool_exe.setTarget(target);
     sgatool_exe.setBuildMode(mode);

@@ -92,32 +92,9 @@ fn writeTreeToFileSystem(allocator: std.mem.Allocator, reader: anytype, data_buf
                 std.debug.assert(std.hash.Crc32.hash(data_buf.items) == node.file.entry.crc);
                 try writer.writeAll(data_buf.items);
             },
+            else => @panic("Unsupported!"),
         }
     }
-}
-
-fn compress(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
-    if (args.len != 2) return error.InvalidArgs;
-
-    var header: sga.SGAHeader = undefined;
-    header.version = 10;
-    header.product = .essence;
-    header.offset = header.calcOffset();
-    _ = allocator;
-
-    var dir = try std.fs.cwd().openDir(args[0], .{ .access_sub_paths = true, .iterate = true });
-    defer dir.close();
-
-    var out_file = try std.fs.cwd().createFile(args[1], .{});
-    defer out_file.close();
-
-    // std.log.info("{d}", .{header.calcOffset()});
-
-    // const writer = out_file.writer();
-    // try header.encode(writer);
-
-    // _ = allocator;
-    // var header: sga.SGAHeader = undefined;
 }
 
 fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
@@ -132,15 +109,26 @@ fn xor(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
     try header.encode(file.writer());
 }
 
+fn getSig(allocator: std.mem.Allocator, args: [][:0]const u8) !void {
+    _ = allocator;
+    if (args.len != 1) return error.InvalidArgs;
+
+    var file = try std.fs.cwd().openFile(args[0], .{ .mode = .read_only });
+    defer file.close();
+
+    var header = try sga.SGAHeader.decode(file.reader());
+    std.log.info("{s} {d}", .{ header.signature, header.signature });
+}
+
 fn printHelp() void {
     std.debug.print(
         \\
         \\sgatool [decompress|compress|tree] ...
         \\    decompress <archive_path> <out_dir_path>
-        \\    compress <dir_path> <out_archive_path>
         \\    tree <archive_path>
         \\
         \\    xor <archive_path>
+        \\    getsig <archive_path>
         \\
         \\NOTE: compress and decompress use the first directory layer as the TOC entries
         \\NOTE 2: at the moment, compress does not support *actual* file compression or md5/sha hashing, it'll just
@@ -167,11 +155,6 @@ pub fn main() !void {
             error.InvalidArgs => printHelp(),
             else => std.log.err("{s}", .{err}),
         };
-    } else if (std.mem.eql(u8, args[1], "compress")) {
-        compress(allocator, args[2..]) catch |err| switch (err) {
-            error.InvalidArgs => printHelp(),
-            else => std.log.err("{s}", .{err}),
-        };
     } else if (std.mem.eql(u8, args[1], "tree")) {
         tree(allocator, args[2..]) catch |err| switch (err) {
             error.InvalidArgs => printHelp(),
@@ -179,6 +162,11 @@ pub fn main() !void {
         };
     } else if (std.mem.eql(u8, args[1], "xor")) {
         xor(allocator, args[2..]) catch |err| switch (err) {
+            error.InvalidArgs => printHelp(),
+            else => std.log.err("{s}", .{err}),
+        };
+    } else if (std.mem.eql(u8, args[1], "getsig")) {
+        getSig(allocator, args[2..]) catch |err| switch (err) {
             error.InvalidArgs => printHelp(),
             else => std.log.err("{s}", .{err}),
         };

@@ -330,6 +330,8 @@ pub const FileStorageType = enum(u8) {
     stream_compress,
     /// Also deflate stream 🤷
     buffer_compress,
+    stream_compress_brotli,
+    buffer_compress_brotli,
 };
 
 pub const FileEntry = struct {
@@ -538,33 +540,32 @@ pub const Archive = struct {
         // TOC
         try reader.context.seekTo(header.offset + header.toc_data_offset);
 
-        var toc_entries = try std.ArrayList(TOCEntry).initCapacity(allocator, header.toc_data_count);
+        var toc_entries = try std.ArrayListUnmanaged(TOCEntry).initCapacity(allocator, header.toc_data_count);
         var toc_index: usize = 0;
 
         while (toc_index < header.toc_data_count) : (toc_index += 1)
-            try toc_entries.append(try TOCEntry.decode(reader, header));
+            try toc_entries.append(allocator, try TOCEntry.decode(reader, header));
 
         // Folders
         try reader.context.seekTo(header.offset + header.folder_data_offset);
 
-        var folder_entries = try std.ArrayList(FolderEntry).initCapacity(allocator, header.folder_data_count);
+        var folder_entries = try std.ArrayListUnmanaged(FolderEntry).initCapacity(allocator, header.folder_data_count);
         var folder_index: usize = 0;
 
         while (folder_index < header.folder_data_count) : (folder_index += 1)
-            try folder_entries.append(try FolderEntry.decode(reader, header));
+            try folder_entries.append(allocator, try FolderEntry.decode(reader, header));
 
         // Files
         try reader.context.seekTo(header.offset + header.file_data_offset);
 
-        var file_entries = try std.ArrayList(FileEntry).initCapacity(allocator, header.file_data_count);
+        var file_entries = try std.ArrayListUnmanaged(FileEntry).initCapacity(allocator, header.file_data_count);
         var file_index: usize = 0;
 
         while (file_index < header.file_data_count) : (file_index += 1)
-            try file_entries.append(try FileEntry.decode(reader, header));
+            try file_entries.append(allocator, try FileEntry.decode(reader, header));
 
         // Make the tree
         var name_buf = std.ArrayListUnmanaged(u8){};
-        // var data_buf = std.ArrayList(u8).init(allocator);
 
         archive.root_nodes = try std.ArrayListUnmanaged(Node).initCapacity(allocator, toc_entries.items.len);
 
@@ -622,8 +623,8 @@ pub fn createChildren(
     reader: anytype,
     header: *const SGAHeader,
     //
-    folder_entries: std.ArrayList(FolderEntry),
-    file_entries: std.ArrayList(FileEntry),
+    folder_entries: std.ArrayListUnmanaged(FolderEntry),
+    file_entries: std.ArrayListUnmanaged(FileEntry),
     //
     folder_start_index: u32,
     folder_end_index: u32,
@@ -643,11 +644,6 @@ pub fn createChildren(
             name = name[index + 1 ..];
         var children = try createChildren(allocator, reader, header, folder_entries, file_entries, folder_entries.items[folder_index].folder_start_index, folder_entries.items[folder_index].folder_end_index, folder_entries.items[folder_index].file_start_index, folder_entries.items[folder_index].file_end_index, name_buf);
         if (name.len > 0) {
-            // var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
-            // var folder_node = Node{ .folder = folder };
-            // folder_node.propagateParent(children.items);
-            // try node_list.append(allocator, folder_node);
-
             var folder = Folder.init(name, children, header, &folder_entries.items[folder_index]);
             var folder_node = try node_list.addOne(allocator);
             folder_node.* = Node{ .folder = folder };

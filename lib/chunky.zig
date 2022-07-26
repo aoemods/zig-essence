@@ -24,58 +24,19 @@ pub const ChunkyHeader = struct {
     }
 };
 
-// TODO: Any benefit to even caring about this?
-// const FourCC = enum(u32) {
-//     _,
+pub const FourCC = enum(u32) {
+    _,
 
-//     pub fn isByteValid(b: u8) bool {
-//         return b >= ' ' and b <= '~';
-//     }
+    pub fn fromArray(array: [4]u8) FourCC {
+        return @intToEnum(FourCC, std.mem.readIntSliceBig(u32, array));
+    }
 
-//     /// Returns the start index of the encoded FourCC sequence (buf[self.toString()..])
-//     /// Returns an `error.Invalid`
-//     pub fn toString(self: FourCC, buf: *[4]u8) error{InvalidArgs}!u3 {
-//         std.mem.writeIntBig(u32, buf, @enumToInt(self));
-
-//         var index: u3 = 0;
-//         for (buf) |b| {
-//             if (b != 0 and !isByteValid(b))
-//                 return error.InvalidArgs
-//             else if (b != 0)
-//                 index += 1;
-//         }
-
-//         return 4 - index;
-//     }
-
-//     pub fn fromString(string: []const u8) error{InvalidArgs}!FourCC {
-//         if (string.len > 4)
-//             return error.InvalidArgs;
-
-//         if (string[0] == ' ') return error.InvalidArgs;
-//         for (string) |b|
-//             if (!isByteValid(b))
-//                 return error.InvalidArgs;
-
-//         if (string.len == 4)
-//             return @intToEnum(FourCC, std.mem.readIntSliceBig(u32, string));
-
-//         var s = std.mem.zeroes([4]u8);
-//         std.mem.copy(u8, s[4 - string.len ..], string);
-//         return @intToEnum(FourCC, std.mem.readIntBig(u32, &s));
-//     }
-
-//     pub fn format(value: FourCC, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-//         _ = options;
-
-//         if (fmt.len >= 1 and fmt[0] == 'd')
-//             try writer.print("{d}", .{@enumToInt(value)})
-//         else {
-//             var buf: [4]u8 = undefined;
-//             try writer.print("FourCC({s} / {d})", .{ buf[(value.toString(&buf) catch unreachable)..], @enumToInt(value) });
-//         }
-//     }
-// };
+    pub fn toArray(four: FourCC) [4]u8 {
+        var buf: [4]u8 = undefined;
+        std.mem.writeIntSliceBig(u8, &buf, @enumToInt(four));
+        return buf;
+    }
+};
 
 /// Header of a Chunky chunk
 pub const ChunkHeader = struct {
